@@ -7,7 +7,7 @@ use hyper_openssl::HttpsConnector;
 #[cfg(feature = "with-hypertls")]
 use hyper_tls::HttpsConnector;
 use serde;
-use serde_json;
+use serde_json::{self, Value};
 
 use std::collections::btree_map::Range;
 use std::collections::BTreeMap;
@@ -21,7 +21,7 @@ use crate::error::Error;
 use crate::token::IdInfo;
 
 pub struct Client {
-    client: HyperClient<HttpsConnector<HttpConnector>>,
+    client: reqwest::Client,
     pub audiences: Vec<String>,
     pub hosted_domains: Vec<String>,
 }
@@ -92,7 +92,7 @@ impl CachedCerts {
             return Ok(false);
         }
 
-        let client = Client::new();
+        let client = Client::new()?;
         let certs: CertsObject = client.get_any(Self::certs_url(), &mut self.expiry).await?;
         self.keys = BTreeMap::new();
 
@@ -105,20 +105,26 @@ impl CachedCerts {
 }
 
 impl Client {
-    pub fn new() -> Client {
+    pub fn new() -> Result<Self, Error> {
         #[cfg(feature = "with-hypertls")]
-        let ssl = HttpsConnector::new();
-        #[cfg(feature = "with-openssl")]
-        let ssl = HttpsConnector::new().expect("unable to build HttpsConnector");
-        let client = HyperClient::builder()
+        let client = reqwest::Client::builder()
+            .connect_timeout(std::time::Duration::from_secs(10))
             .http2_max_frame_size(0x2000)
             .pool_max_idle_per_host(0)
-            .build(ssl);
-        Client {
+            .build()
+            .map_err(|e| Error::ConnectionError(Box::new(e)))?;
+        // let ssl = HttpsConnector::new();
+        // #[cfg(feature = "with-openssl")]
+        // let ssl = HttpsConnector::new().expect("unable to build HttpsConnector");
+        // let client = HyperClient::builder()
+        //     .http2_max_frame_size(0x2000)
+        //     .pool_max_idle_per_host(0)
+        //     .build(ssl);
+        Ok(Client {
             client,
             audiences: vec![],
             hosted_domains: vec![],
-        }
+        })
     }
 
     /// Verifies that the token is signed by Google's OAuth cerificate,
@@ -180,8 +186,12 @@ impl Client {
         url: &str,
         cache: &mut Option<Instant>,
     ) -> Result<T, Error> {
-        let url = url.parse().unwrap();
-        let response = self.client.get(url).await.unwrap();
+        let response = self
+            .client
+            .get(url)
+            .send()
+            .await
+            .map_err(|e| Error::ConnectionError(Box::new(e)))?;
 
         let status = response.status().as_u16();
         match status {
@@ -204,7 +214,11 @@ impl Client {
             }
         }
 
-        let body = hyper::body::aggregate(response).await?;
-        Ok(serde_json::from_reader(body.reader())?)
+        let rs = response
+            .json::<T>()
+            .await
+            .map_err(|e| Error::ConnectionError(Box::new(e)))?;
+
+        Ok(rs)
     }
 }
