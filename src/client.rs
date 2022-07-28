@@ -159,6 +159,12 @@ impl Client {
         Err(Error::InvalidToken)
     }
 
+    pub async fn verify_token(&self, id_token: &str) -> Result<IdInfo, Error> {
+        let mut certs = CachedCerts::new();
+        let _ = certs.refresh_if_needed().await?;
+        self.verify(id_token, &certs).await
+    }
+
     /// Checks the token using Google's slow OAuth-like authentication flow.
     ///
     /// This checks that the token is signed using Google's OAuth certificate,
@@ -167,10 +173,7 @@ impl Client {
     /// This is NOT the recommended way to use the library, but can be used in combination with
     /// [IdInfo.verify](https://docs.rs/google-signin/latest/google_signin/struct.IdInfo.html#impl)
     /// for applications with more complex error-handling requirements.
-    pub async fn get_slow_unverified(
-        &self,
-        id_token: &str,
-    ) -> Result<IdInfo<String, String>, Error> {
+    pub async fn get_slow_unverified(&self, id_token: &str) -> Result<IdInfo<bool, u64>, Error> {
         self.get_any(
             &format!(
                 "https://www.googleapis.com/oauth2/v3/tokeninfo?id_token={}",
