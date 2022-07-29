@@ -8,6 +8,7 @@ use hyper_openssl::HttpsConnector;
 use hyper_tls::HttpsConnector;
 use serde;
 use serde_json::{self, Value};
+use tokio::sync::Mutex;
 
 use std::collections::btree_map::Range;
 use std::collections::BTreeMap;
@@ -15,7 +16,10 @@ use std::ops::{
     Bound,
     Bound::{Included, Unbounded},
 };
-use std::time::{Duration, Instant};
+use std::{
+    sync::Arc,
+    time::{Duration, Instant},
+};
 
 use crate::error::Error;
 use crate::token::IdInfo;
@@ -24,6 +28,7 @@ pub struct Client {
     client: reqwest::Client,
     pub audiences: Vec<String>,
     pub hosted_domains: Vec<String>,
+    certs: Arc<Mutex<CachedCerts>>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -121,6 +126,7 @@ impl Client {
         //     .pool_max_idle_per_host(0)
         //     .build(ssl);
         Ok(Client {
+            certs: Arc::new(Mutex::new(CachedCerts::new())),
             client,
             audiences: vec![],
             hosted_domains: vec![],
@@ -160,9 +166,12 @@ impl Client {
     }
 
     pub async fn verify_token(&self, id_token: &str) -> Result<IdInfo, Error> {
-        let mut certs = CachedCerts::new();
-        let _ = certs.refresh_if_needed().await?;
-        self.verify(id_token, &certs).await
+        let mut certs = self.certs.lock().await;
+        if certs.keys.len() == 0 {
+            certs.refresh_if_needed().await?;
+        }
+        let v = self.verify(id_token, &certs).await?;
+        Ok(v)
     }
 
     /// Checks the token using Google's slow OAuth-like authentication flow.
